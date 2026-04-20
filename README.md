@@ -201,6 +201,110 @@ python create_map_poster.py -c "Tokyo" -C "Japan" --all-themes
 | 8000-12000m | Medium cities, focused downtown (Paris, Barcelona) |
 | 15000-20000m | Large metros, full city view (Tokyo, Mumbai) |
 
+## Generate GPX Route Poster
+
+Generate a map poster with your GPX track overlaid in high-contrast color. Perfect for visualizing running routes, hikes, cycling trips, or any GPS tracking activity.
+
+### Basic Usage
+
+If you're using `uv`:
+
+```bash
+uv run ./create_gpx_map_poster.py --gpx <gpx_file> --city <city> --country <country> [options]
+```
+
+Otherwise (pip + venv):
+
+```bash
+python create_gpx_map_poster.py --gpx <gpx_file> --city <city> --country <country> [options]
+```
+
+### Required Options
+
+| Option | Description |
+|--------|-------------|
+| `--gpx` | Path to GPX file containing track points |
+| `--city` | City/title label for the poster |
+| `--country` | Country/subtitle label for the poster |
+
+### Optional Flags
+
+| Option | Short | Description | Default |
+|--------|-------|-------------|---------|
+| `--theme` | `-t` | Theme name | terracotta |
+| `--distance` | `-d` | Map radius in meters (auto-calculated from GPX if omitted) | |
+| `--width` | `-W` | Image width in inches | 12 (max: 20) |
+| `--height` | `-H` | Image height in inches | 16 (max: 20) |
+| `--route-linewidth` | | GPX route line thickness | 3.4 |
+| `--route-padding-ratio` | | Extra edge padding to keep full route visible (0-1) | 0.05 |
+| `--font-family` | | Google Fonts family name (e.g., "Noto Sans JP") | |
+| `--format` | `-f` | Output format: png, svg, or pdf | png |
+| `--output` | `-o` | Output file path (auto-generated if omitted) | |
+
+### How It Works
+
+1. **Parses your GPX file** to extract all track points
+2. **Computes the center** from the track bounding box
+3. **Auto-calculates optimal distance** to fit the entire track in the view (or use `--distance` to override)
+4. **Fetches map data** for streets, water, and parks around the track
+5. **Overlays your track** in a high-contrast color automatically selected to stand out against the theme
+6. **Displays start coordinates** and labels at the bottom of the poster
+
+### Usage Examples
+
+#### Basic Route Poster
+
+```bash
+# Simple GPX poster with default theme
+python create_gpx_map_poster.py --gpx "gpx/run.gpx" --city "Seattle" --country "USA"
+
+# With custom theme
+python create_gpx_map_poster.py --gpx "gpx/morning_run.gpx" --city "Georgetown" --country "Malaysia" --theme midnight_blue
+
+# Specify map radius
+python create_gpx_map_poster.py --gpx "gpx/cycling_route.gpx" --city "Amsterdam" --country "Netherlands" -t ocean -d 12000
+```
+
+#### Custom Output
+
+```bash
+# Generate SVG output for printing
+python create_gpx_map_poster.py --gpx "gpx/hike.gpx" --city "Moab" --country "USA" --format svg -t forest
+
+# PDF format with custom dimensions
+python create_gpx_map_poster.py --gpx "gpx/trek.gpx" --city "Kathmandu" --country "Nepal" -f pdf -W 8.3 -H 11.7
+
+# Custom output filename
+python create_gpx_map_poster.py --gpx "gpx/my_route.gpx" --city "Tokyo" --country "Japan" -o my_custom_poster.png
+```
+
+#### Advanced Examples
+
+```bash
+# Thicker route line for visibility
+python create_gpx_map_poster.py --gpx "gpx/ultra_run.gpx" --city "Moab" --country "USA" --route-linewidth 5.0 -t noir
+
+# Minimal padding to focus on track
+python create_gpx_map_poster.py --gpx "gpx/tight_route.gpx" --city "Denver" --country "USA" --route-padding-ratio 0.02 -t sunset
+
+# Custom fonts for international routes
+python create_gpx_map_poster.py --gpx "gpx/tokyo_marathon.gpx" --city "Tokyo" --country "Japan" --font-family "Noto Sans JP" -t japanese_ink
+
+# Large format for printing (A4 size at 300 DPI)
+python create_gpx_map_poster.py --gpx "gpx/scenic_route.gpx" --city "Barcelona" --country "Spain" -W 8.3 -H 11.7 -t warm_beige
+```
+
+#### Multi-Theme Generation
+
+Generate the same route in different themes:
+
+```bash
+# Try different themes for the same GPX file
+for theme in noir midnight_blue forest ocean sunset; do
+  python create_gpx_map_poster.py --gpx "gpx/my_run.gpx" --city "Paris" --country "France" -t "$theme"
+done
+```
+
 ## Themes
 
 17 themes available in `themes/` directory:
