@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A route line over a faint street grid, kept inside the 66dp adaptive-icon safe zone. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:pathData="M30,44 L78,44 M30,62 L78,62 M44,30 L44,78 M64,30 L64,78"
+        android:strokeWidth="1.5"
+        android:strokeColor="#40FFFFFF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M34,72 C38,58 50,64 54,52 C58,40 46,36 54,32 C62,28 70,40 74,36"
+        android:strokeWidth="5"
+        android:strokeColor="#FFD166"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M30,72 a4,4 0 1,0 8,0 a4,4 0 1,0 -8,0 M70,36 a4,4 0 1,0 8,0 a4,4 0 1,0 -8,0" />
+</vector>

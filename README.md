@@ -377,6 +377,20 @@ curl -H "X-API-Key: $POSTER_API_KEY" -H "Content-Type: application/json" \
   http://localhost:8000/posters/strava
 ```
 
+## Android App
+
+`android/` contains a Kotlin/Jetpack Compose client for the HTTP API server. It picks or receives ("Share to…" / "Open with…") GPX, FIT, TCX, `.zip` and `.gz` track files, can list Strava activities, shows rendering progress, and previews, shares or saves the finished poster.
+
+Build and install (needs the Android SDK and JDK 17, e.g. from Android Studio):
+
+```bash
+cd android
+./gradlew assembleDebug
+adb install -r app/build/outputs/apk/debug/app-debug.apk
+```
+
+Or open `android/` in Android Studio and press Run. In the app's **Settings** tab, enter the server URL (e.g. your PC's Tailscale name, `http://my-pc:8000`) and the `POSTER_API_KEY`.
+
 ## Themes
 
 17 themes available in `themes/` directory:
