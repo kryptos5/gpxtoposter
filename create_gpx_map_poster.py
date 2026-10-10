@@ -8,8 +8,8 @@ using a high-contrast color.
 
 import argparse
 import math
+import re
 import sys
-import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -21,38 +21,8 @@ from shapely.geometry import Point
 from tqdm import tqdm
 
 import create_map_poster as cmp
-
-
-def parse_gpx_points(gpx_file: str) -> list[tuple[float, float]]:
-    """Parse track/route points from a GPX file as (lat, lon) tuples."""
-    try:
-        tree = ET.parse(gpx_file)
-        root = tree.getroot()
-    except ET.ParseError as exc:
-        raise ValueError(f"Invalid GPX file: {exc}") from exc
-
-    points: list[tuple[float, float]] = []
-
-    # Prefer track points; fall back to route points.
-    trkpts = root.findall(".//{*}trkpt")
-    rtepts = root.findall(".//{*}rtept") if not trkpts else []
-    source = trkpts if trkpts else rtepts
-
-    for node in source:
-        lat = node.attrib.get("lat")
-        lon = node.attrib.get("lon")
-        if lat is None or lon is None:
-            continue
-        try:
-            points.append((float(lat), float(lon)))
-        except ValueError:
-            continue
-
-    if len(points) < 2:
-        raise ValueError(
-            "GPX file must contain at least 2 valid trkpt/rtept coordinates")
-
-    return points
+import strava_source
+from track_files import parse_track_file, track_stem
 
 
 def compute_center(points: list[tuple[float, float]]) -> tuple[float, float]:
@@ -176,8 +146,12 @@ def pick_route_color(theme: dict[str, str]) -> str:
 
     candidates = warm_candidates if is_warm_theme else cool_candidates
 
-    # Neon Cyberpunk roads already use cyan/magenta heavily; avoid cyan route lines.
+    # Midnight Blue prefers crisp white route lines for maximum readability.
     theme_name = theme.get("name", "").lower()
+    if "midnight" in theme_name and "blue" in theme_name:
+        return "#FFFFFF"
+
+    # Neon Cyberpunk roads already use cyan/magenta heavily; avoid cyan route lines.
     if "neon" in theme_name and "cyberpunk" in theme_name:
         candidates = [
             "#FFD400",  # Yellow
@@ -269,6 +243,7 @@ def create_gpx_poster(
     fonts,
     route_linewidth: float,
     route_padding_ratio: float,
+    show_coordinates: bool,
 ) -> None:
     """Render a themed map poster centered on GPX route with route overlay."""
     print(
@@ -417,9 +392,6 @@ def create_gpx_poster(
     display_city = city.upper() if cmp.is_latin_script(city) else city
     display_country = country.upper() if cmp.is_latin_script(
         country) else country
-    start_lat, start_lon = gpx_points[0]
-    start_coords_text = format_start_coordinates(start_lat, start_lon)
-
     ax.text(0.5,
             0.14,
             display_city,
@@ -436,17 +408,20 @@ def create_gpx_poster(
             ha="center",
             fontproperties=font_sub,
             zorder=11)
-    ax.text(
-        0.5,
-        0.07,
-        start_coords_text,
-        transform=ax.transAxes,
-        color=theme["text"],
-        alpha=0.8,
-        ha="center",
-        fontproperties=font_coords,
-        zorder=11,
-    )
+    if show_coordinates:
+        start_lat, start_lon = gpx_points[0]
+        start_coords_text = format_start_coordinates(start_lat, start_lon)
+        ax.text(
+            0.5,
+            0.07,
+            start_coords_text,
+            transform=ax.transAxes,
+            color=theme["text"],
+            alpha=0.8,
+            ha="center",
+            fontproperties=font_coords,
+            zorder=11,
+        )
 
     fmt = output_format.lower()
     save_kwargs = {
@@ -472,10 +447,26 @@ Examples:
   python create_gpx_map_poster.py --gpx "gpx/route.gpx" --city "Georgetown" --country "Malaysia" --theme midnight_blue
   python create_gpx_map_poster.py --gpx "gpx/run.gpx" --theme ocean --distance 8000 --format svg
   python create_gpx_map_poster.py --gpx "gpx/hike.gpx"  # Auto-detect city and country
+  python create_gpx_map_poster.py --track "exports/activity.fit.gz" --theme noir
+  python create_gpx_map_poster.py --strava-activity 1234567890 --theme midnight_blue
         """,
     )
 
-    parser.add_argument("--gpx", required=True, help="Path to GPX file")
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument(
+        "--gpx",
+        "--track",
+        dest="gpx",
+        metavar="FILE",
+        help="Path to GPX, TCX or FIT track file (optionally .gz compressed)",
+    )
+    source.add_argument(
+        "--strava-activity",
+        type=int,
+        metavar="ID",
+        help=
+        "Strava activity ID to fetch the route from (run 'python strava_source.py auth' first)",
+    )
     parser.add_argument(
         "--city",
         default=None,
@@ -523,42 +514,61 @@ Examples:
                         choices=["png", "svg", "pdf"],
                         help="Output format")
     parser.add_argument("--output", "-o", help="Output file path (optional)")
+    parser.add_argument(
+        "--no-coordinates",
+        action="store_true",
+        help="Hide start coordinates text at the bottom of the poster",
+    )
     return parser.parse_args()
 
 
-def main() -> None:
-    args = parse_args()
+def strava_output_stem(activity_id: int, activity: dict) -> str:
+    """Build an output filename stem from a Strava activity's date and name."""
+    start_date = activity.get("start_date_local", "")[:10].replace("-", "")
+    name_slug = re.sub(r"\W+", "_", activity.get("name", "")).strip("_")
+    return "_".join(part for part in (start_date, name_slug, str(activity_id))
+                    if part)
 
-    gpx_path = Path(args.gpx)
-    if not gpx_path.exists():
-        raise FileNotFoundError(f"GPX file not found: {gpx_path}")
 
+def generate_poster(
+    gpx_points: list[tuple[float, float]],
+    output_stem: str,
+    theme: str = "terracotta",
+    city: str | None = None,
+    country: str | None = None,
+    distance: int | None = None,
+    width: float = 12,
+    height: float = 16,
+    route_linewidth: float = 3.4,
+    route_padding_ratio: float = 0.05,
+    font_family: str | None = None,
+    output_format: str = "png",
+    output_file: str | None = None,
+    show_coordinates: bool = True,
+) -> str:
+    """Validate options, resolve labels/theme/fonts and render a poster. Returns the output path."""
     available_themes = cmp.get_available_themes()
-    if args.theme not in available_themes:
+    if theme not in available_themes:
         raise ValueError(
-            f"Theme '{args.theme}' not found. Available themes: {', '.join(available_themes)}"
+            f"Theme '{theme}' not found. Available themes: {', '.join(available_themes)}"
         )
-
-    gpx_points = parse_gpx_points(str(gpx_path))
-    center = compute_center(gpx_points)
-    dist = args.distance or estimate_distance(gpx_points, center)
-
-    if args.route_linewidth <= 0:
+    if route_linewidth <= 0:
         raise ValueError("--route-linewidth must be greater than 0")
-    if not 0 <= args.route_padding_ratio <= 1:
+    if not 0 <= route_padding_ratio <= 1:
         raise ValueError("--route-padding-ratio must be between 0 and 1")
+
+    center = compute_center(gpx_points)
+    dist = distance or estimate_distance(gpx_points, center)
 
     print(f"✓ Loaded {len(gpx_points)} GPX points")
     print(
         f"✓ Center overridden from GPX: lat={center[0]:.6f}, lon={center[1]:.6f}"
     )
     print(f"✓ Map distance: {dist} m")
-    print(f"✓ Route linewidth: {args.route_linewidth}")
-    print(f"✓ Route padding ratio: {args.route_padding_ratio}")
+    print(f"✓ Route linewidth: {route_linewidth}")
+    print(f"✓ Route padding ratio: {route_padding_ratio}")
 
     # Auto-detect city and country from starting coordinates if not provided
-    city = args.city
-    country = args.country
     if not city or not country:
         start_lat, start_lon = gpx_points[0]
         print(
@@ -571,32 +581,67 @@ def main() -> None:
             country = detected_country
         print(f"✓ Detected: {city}, {country}")
 
-    cmp.THEME = cmp.load_theme(args.theme)
+    cmp.THEME = cmp.load_theme(theme)
 
     custom_fonts = None
-    if args.font_family:
-        custom_fonts = cmp.load_fonts(args.font_family)
+    if font_family:
+        custom_fonts = cmp.load_fonts(font_family)
         if not custom_fonts:
             print(
-                f"⚠ Failed to load '{args.font_family}', falling back to defaults"
-            )
+                f"⚠ Failed to load '{font_family}', falling back to defaults")
 
-    output_file = args.output or cmp.generate_output_filename(
-        gpx_path.stem, args.theme, args.format)
+    output_file = output_file or cmp.generate_output_filename(
+        output_stem, theme, output_format)
 
     create_gpx_poster(
         gpx_points=gpx_points,
         center=center,
         dist=dist,
         output_file=output_file,
-        output_format=args.format,
+        output_format=output_format,
         city=city,
         country=country,
+        width=width,
+        height=height,
+        fonts=custom_fonts,
+        route_linewidth=route_linewidth,
+        route_padding_ratio=route_padding_ratio,
+        show_coordinates=show_coordinates,
+    )
+    return output_file
+
+
+def main() -> None:
+    args = parse_args()
+
+    if args.strava_activity is not None:
+        print(f"Fetching Strava activity {args.strava_activity}...")
+        gpx_points, activity = strava_source.fetch_activity(
+            args.strava_activity)
+        print(f"✓ Strava activity: {activity.get('name', '')}")
+        output_stem = strava_output_stem(args.strava_activity, activity)
+    else:
+        gpx_path = Path(args.gpx)
+        if not gpx_path.exists():
+            raise FileNotFoundError(f"Track file not found: {gpx_path}")
+        gpx_points = parse_track_file(gpx_path)
+        output_stem = track_stem(gpx_path.name)
+
+    generate_poster(
+        gpx_points=gpx_points,
+        output_stem=output_stem,
+        theme=args.theme,
+        city=args.city,
+        country=args.country,
+        distance=args.distance,
         width=args.width,
         height=args.height,
-        fonts=custom_fonts,
         route_linewidth=args.route_linewidth,
         route_padding_ratio=args.route_padding_ratio,
+        font_family=args.font_family,
+        output_format=args.format,
+        output_file=args.output,
+        show_coordinates=not args.no_coordinates,
     )
 
 

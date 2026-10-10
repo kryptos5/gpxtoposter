@@ -79,6 +79,7 @@ python create_map_poster.py --city <city> --country <country> [options]
 | **OPTIONAL:** `--all-themes` | | Generate posters for all available themes | |
 | **OPTIONAL:** `--width` | `-W` | Image width in inches | 12 (max: 20) |
 | **OPTIONAL:** `--height` | `-H` | Image height in inches | 16 (max: 20) |
+| **OPTIONAL:** `--no-coordinates` | | Hide coordinates text at the bottom of the poster | |
 
 ### Multilingual Support - i18n
 
@@ -223,7 +224,8 @@ python create_gpx_map_poster.py --gpx <gpx_file> --city <city> --country <countr
 
 | Option | Description |
 |--------|-------------|
-| `--gpx` | Path to GPX file containing track points |
+| `--gpx` / `--track` | Path to a GPX, TCX or FIT track file, optionally gzip-compressed (`.fit.gz`, ...) or zipped |
+| `--strava-activity` | Strava activity ID to fetch the track from (use instead of `--gpx`, see [Import from Strava](#import-from-strava)) |
 | `--city` | City/title label for the poster |
 | `--country` | Country/subtitle label for the poster |
 
@@ -240,15 +242,53 @@ python create_gpx_map_poster.py --gpx <gpx_file> --city <city> --country <countr
 | `--font-family` | | Google Fonts family name (e.g., "Noto Sans JP") | |
 | `--format` | `-f` | Output format: png, svg, or pdf | png |
 | `--output` | `-o` | Output file path (auto-generated if omitted) | |
+| `--no-coordinates` | | Hide start coordinates text at the bottom of the poster | |
+
+### Exported Activity Files (Garmin, Strava, ...)
+
+Besides GPX, the poster generator reads **FIT** and **TCX** files, plus gzip-compressed (`.gz`) or zipped versions of all three. This covers:
+
+- **Garmin Connect**: on an activity page, "Export Original" (a zip containing the FIT file, which can be used as-is) or export to GPX/TCX.
+- **Strava**: "Export GPX" on your own activity page, or the files in the `activities/` folder of a Strava data export (often `.fit.gz` / `.gpx.gz`).
+
+```bash
+python create_gpx_map_poster.py --track "exports/activities/1234567890.fit.gz" --theme noir
+```
+
+### Import from Strava
+
+Instead of a track file, you can pull the route straight from one of your Strava activities. Strava API access requires a Strava subscription.
+
+One-time setup:
+
+1. Create an API application at <https://www.strava.com/settings/api> and set **Authorization Callback Domain** to `localhost`.
+2. Set your app credentials as environment variables:
+   ```bash
+   export STRAVA_CLIENT_ID=<your client id>
+   export STRAVA_CLIENT_SECRET=<your client secret>
+   ```
+3. Authorize your account:
+   ```bash
+   python strava_source.py auth
+   ```
+   Open the printed URL, approve access, and paste back the URL you are redirected to (the page itself won't load; that's expected). Tokens are saved to `.strava_token.json` (git-ignored) and refreshed automatically.
+
+Then generate a poster using the activity ID from the activity's URL (`strava.com/activities/<ID>`):
+
+```bash
+python create_gpx_map_poster.py --strava-activity 1234567890 --theme midnight_blue
+```
+
+Indoor and manual activities have no GPS track and can't be used.
 
 ### How It Works
 
-1. **Parses your GPX file** to extract all track points
+1. **Parses your GPX file** (or fetches the Strava activity) to extract all track points
 2. **Computes the center** from the track bounding box
 3. **Auto-calculates optimal distance** to fit the entire track in the view (or use `--distance` to override)
 4. **Fetches map data** for streets, water, and parks around the track
 5. **Overlays your track** in a high-contrast color automatically selected to stand out against the theme
-6. **Displays start coordinates** and labels at the bottom of the poster
+6. **Displays start coordinates** and labels at the bottom of the poster (or hide them with `--no-coordinates`)
 
 ### Usage Examples
 
@@ -303,6 +343,38 @@ Generate the same route in different themes:
 for theme in noir midnight_blue forest ocean sunset; do
   python create_gpx_map_poster.py --gpx "gpx/my_run.gpx" --city "Paris" --country "France" -t "$theme"
 done
+```
+
+## HTTP API Server
+
+`server.py` exposes the GPX/Strava poster generator over HTTP, e.g. as a backend for a phone app.
+
+```bash
+export POSTER_API_KEY=<a long random string>   # required header X-API-Key on every request
+uvicorn server:app --host 0.0.0.0 --port 8000
+```
+
+For Strava endpoints, set `STRAVA_CLIENT_ID` / `STRAVA_CLIENT_SECRET` and run `python strava_source.py auth` once (see [Import from Strava](#import-from-strava)). Interactive docs are served at `http://<host>:8000/docs`.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/health` | Liveness check (no API key needed) |
+| `GET` | `/themes` | List theme names |
+| `GET` | `/strava/activities?page=1&per_page=30` | Recent Strava activities, with `has_gps` and `summary_polyline` for previews |
+| `POST` | `/posters/strava` | Start a poster from a Strava activity. JSON body: `{"activity_id": 123, "theme": "midnight_blue", ...}` |
+| `POST` | `/posters/gpx` | Start a poster from an uploaded GPX, TCX or FIT file (optionally `.gz` or `.zip`). Multipart: `file` plus optional `options` (JSON string) |
+| `GET` | `/posters` | List poster jobs, newest first |
+| `GET` | `/posters/{id}` | Job status: `queued`, `running`, `done` or `failed` (with `error`) |
+| `GET` | `/posters/{id}/file` | Download the finished poster |
+
+Poster options mirror the CLI flags: `theme`, `city`, `country`, `distance`, `width`, `height`, `route_linewidth`, `route_padding_ratio`, `font_family`, `format` (`png`/`svg`/`pdf`) and `show_coordinates`.
+
+Rendering takes from tens of seconds to a few minutes, so poster requests return `202` with a job immediately; poll the job, then download the file. Posters render one at a time and are saved to `posters/`. The job list is kept in memory and resets when the server restarts.
+
+```bash
+curl -H "X-API-Key: $POSTER_API_KEY" -H "Content-Type: application/json" \
+  -d '{"activity_id": 1234567890, "theme": "midnight_blue"}' \
+  http://localhost:8000/posters/strava
 ```
 
 ## Themes
