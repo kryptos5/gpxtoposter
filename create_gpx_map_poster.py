@@ -265,10 +265,7 @@ def create_gpx_poster(
         water = cmp.fetch_features(
             center,
             compensated_dist,
-            tags={
-                "natural": ["water", "bay", "strait"],
-                "waterway": "riverbank"
-            },
+            tags=cmp.WATER_TAGS,
             name="water",
         )
         pbar.update(1)
@@ -277,10 +274,7 @@ def create_gpx_poster(
         parks = cmp.fetch_features(
             center,
             compensated_dist,
-            tags={
-                "leisure": "park",
-                "landuse": "grass"
-            },
+            tags=cmp.PARKS_TAGS,
             name="parks",
         )
         pbar.update(1)

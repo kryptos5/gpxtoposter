@@ -31,6 +31,7 @@ from shapely.geometry import Point
 from tqdm import tqdm
 
 from font_management import load_fonts
+from region_cache import RegionCache, layer_name, request_bbox
 
 
 class CacheError(Exception):
@@ -40,6 +41,17 @@ class CacheError(Exception):
 CACHE_DIR_PATH = os.environ.get("CACHE_DIR", "cache")
 CACHE_DIR = Path(CACHE_DIR_PATH)
 CACHE_DIR.mkdir(exist_ok=True)
+
+# Map data is cached by area in REGION_CACHE (see region_cache.py); osmnx's own
+# per-request HTTP cache would only duplicate it on disk.
+ox.settings.use_cache = False
+REGION_CACHE = RegionCache(CACHE_DIR)
+# Optionally use another Overpass server, e.g. when the default one is down.
+if os.environ.get("OVERPASS_URL"):
+    ox.settings.overpass_url = os.environ["OVERPASS_URL"]
+
+WATER_TAGS = {"natural": ["water", "bay", "strait"], "waterway": "riverbank"}
+PARKS_TAGS = {"leisure": "park", "landuse": "grass"}
 
 THEMES_DIR = "themes"
 FONTS_DIR = "fonts"
@@ -410,8 +422,8 @@ def fetch_graph(point, dist) -> MultiDiGraph | None:
     """
     Fetch street network graph from OpenStreetMap.
 
-    Uses caching to avoid redundant downloads. Fetches all network types
-    within the specified distance from the center point.
+    Served from the area cache when a previously downloaded or prefetched area
+    covers the request; otherwise a padded area is downloaded and cached.
 
     Args:
         point: (latitude, longitude) tuple for center point
@@ -420,33 +432,23 @@ def fetch_graph(point, dist) -> MultiDiGraph | None:
     Returns:
         MultiDiGraph of street network, or None if fetch fails
     """
-    lat, lon = point
-    graph = f"graph_{lat}_{lon}_{dist}"
-    cached = cache_get(graph)
-    if cached is not None:
-        print("✓ Using cached street network")
-        return cast(MultiDiGraph, cached)
-
     try:
-        g = ox.graph_from_point(point, dist=dist, dist_type='bbox', network_type='all', truncate_by_edge=True)
-        # Rate limit between requests
-        time.sleep(0.5)
-        try:
-            cache_set(graph, g)
-        except CacheError as e:
-            print(e)
-        return g
+        g, cached = REGION_CACHE.get(
+            "graph", request_bbox(point, dist), _download_graph, _clip_graph)
     except Exception as e:
         print(f"OSMnx error while fetching graph: {e}")
         return None
+    if cached:
+        print("✓ Using cached street network")
+    return cast(MultiDiGraph, g)
 
 
 def fetch_features(point, dist, tags, name) -> GeoDataFrame | None:
     """
     Fetch geographic features (water, parks, etc.) from OpenStreetMap.
 
-    Uses caching to avoid redundant downloads. Fetches features matching
-    the specified OSM tags within distance from center point.
+    Served from the area cache when a previously downloaded or prefetched area
+    covers the request; otherwise a padded area is downloaded and cached.
 
     Args:
         point: (latitude, longitude) tuple for center point
@@ -457,26 +459,67 @@ def fetch_features(point, dist, tags, name) -> GeoDataFrame | None:
     Returns:
         GeoDataFrame of features, or None if fetch fails
     """
-    lat, lon = point
-    tag_str = "_".join(tags.keys())
-    features = f"{name}_{lat}_{lon}_{dist}_{tag_str}"
-    cached = cache_get(features)
-    if cached is not None:
-        print(f"✓ Using cached {name}")
-        return cast(GeoDataFrame, cached)
-
     try:
-        data = ox.features_from_point(point, tags=tags, dist=dist)
-        # Rate limit between requests
-        time.sleep(0.3)
-        try:
-            cache_set(features, data)
-        except CacheError as e:
-            print(e)
-        return data
+        data, cached = REGION_CACHE.get(
+            layer_name(name, tags),
+            request_bbox(point, dist),
+            lambda bbox: _download_features(bbox, tags),
+            _clip_features,
+        )
     except Exception as e:
         print(f"OSMnx error while fetching features: {e}")
         return None
+    if cached:
+        print(f"✓ Using cached {name}")
+    return cast(GeoDataFrame, data)
+
+
+def _download_graph(bbox) -> MultiDiGraph:
+    g = ox.graph_from_bbox(bbox, network_type="all", truncate_by_edge=True)
+    time.sleep(0.5)  # Rate limit between requests
+    return g
+
+
+def _clip_graph(g, bbox) -> MultiDiGraph:
+    return ox.truncate.truncate_graph_bbox(g, bbox, truncate_by_edge=True)
+
+
+def _download_features(bbox, tags) -> GeoDataFrame:
+    try:
+        data = ox.features_from_bbox(bbox, tags=tags)
+    except ox._errors.InsufficientResponseError:
+        # No such features here (e.g. no water): cache the empty result too.
+        data = GeoDataFrame(geometry=[], crs="EPSG:4326")
+    time.sleep(0.3)  # Rate limit between requests
+    return data
+
+
+def _clip_features(data, bbox) -> GeoDataFrame:
+    if data.empty:
+        return data
+    west, south, east, north = bbox
+    return data.cx[west:east, south:north]
+
+
+def prefetch_area(point, dist) -> None:
+    """
+    Download streets, water and parks for a whole area into the cache, so every
+    later poster whose map lies inside it renders without downloading.
+    """
+    bbox = request_bbox(point, dist)
+    size_km = 2 * dist / 1000
+    print(f"Prefetching map data for {size_km:g} × {size_km:g} km around "
+          f"{point[0]:.5f}, {point[1]:.5f}")
+    layers = [
+        ("street network", "graph", _download_graph),
+        ("water", layer_name("water", WATER_TAGS), lambda b: _download_features(b, WATER_TAGS)),
+        ("parks", layer_name("parks", PARKS_TAGS), lambda b: _download_features(b, PARKS_TAGS)),
+    ]
+    for label, layer, download in layers:
+        print(f"  {label}...", end=" ", flush=True)
+        downloaded = REGION_CACHE.ensure(layer, bbox, download)
+        print("downloaded" if downloaded else "already cached")
+    print("✓ Prefetch complete. Posters inside this area will use the cache.")
 
 
 def create_poster(
@@ -543,7 +586,7 @@ def create_poster(
         water = fetch_features(
             point,
             compensated_dist,
-            tags={"natural": ["water", "bay", "strait"], "waterway": "riverbank"},
+            tags=WATER_TAGS,
             name="water",
         )
         pbar.update(1)
@@ -553,7 +596,7 @@ def create_poster(
         parks = fetch_features(
             point,
             compensated_dist,
-            tags={"leisure": "park", "landuse": "grass"},
+            tags=PARKS_TAGS,
             name="parks",
         )
         pbar.update(1)
@@ -870,6 +913,7 @@ Examples:
   python create_map_poster.py --city Tokyo --country Japan --theme midnight_blue
   python create_map_poster.py --city Paris --country France --theme noir --distance 15000
   python create_map_poster.py --list-themes
+  python create_map_poster.py --prefetch --city Gelugor --country Malaysia --distance 15000
         """,
     )
 
@@ -962,6 +1006,12 @@ Examples:
         action="store_true",
         help="Hide coordinates text at the bottom of the poster",
     )
+    parser.add_argument(
+        "--prefetch",
+        action="store_true",
+        help="Only download and cache map data for the area (--city/--country or "
+        "--latitude/--longitude, radius --distance) so later posters there render offline",
+    )
 
     args = parser.parse_args()
 
@@ -973,6 +1023,21 @@ Examples:
     # List themes if requested
     if args.list_themes:
         list_themes()
+        sys.exit(0)
+
+    if args.prefetch:
+        try:
+            if args.latitude and args.longitude:
+                center = (parse(args.latitude), parse(args.longitude))
+            elif args.city and args.country:
+                center = get_coordinates(args.city, args.country)
+            else:
+                print("Error: --prefetch needs --city and --country, or --latitude and --longitude.")
+                sys.exit(1)
+            prefetch_area(center, args.distance)
+        except Exception as e:
+            print(f"\n✗ Error: {e}")
+            sys.exit(1)
         sys.exit(0)
 
     # Validate required arguments

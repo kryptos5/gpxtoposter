@@ -202,6 +202,23 @@ python create_map_poster.py -c "Tokyo" -C "Japan" --all-themes
 | 8000-12000m | Medium cities, focused downtown (Paris, Barcelona) |
 | 15000-20000m | Large metros, full city view (Tokyo, Mumbai) |
 
+### Map Data Cache and Prefetch
+
+Downloading OpenStreetMap data is most of the work: a poster takes a minute or more to download but only seconds to render from cache. Map data is cached **by area** in `cache/` (index in `cache/regions.json`). Any poster whose map lies inside a previously downloaded area is served from the cache, whatever its exact center, size or route. On a miss, a padded area is downloaded so nearby posters hit too.
+
+If you make posters in the same area repeatedly (e.g. your usual running routes), prefetch it once:
+
+```bash
+# 30 × 30 km around a city
+python create_map_poster.py --prefetch --city Gelugor --country Malaysia --distance 15000
+# or around coordinates
+python create_map_poster.py --prefetch -lat 5.3776 -long 100.3032 --distance 15000
+```
+
+After that, every city or GPX poster inside the area renders without downloading. Cached data does not refresh itself; delete `cache/` (or the area's `region_*.pkl` files and `regions.json`) to pick up new OSM edits.
+
+If the default Overpass server (`overpass-api.de`) is down or timing out, point downloads at another instance with the `OVERPASS_URL` environment variable, e.g. `OVERPASS_URL=https://overpass.kumi.systems/api`.
+
 ## Generate GPX Route Poster
 
 Generate a map poster with your GPX track overlaid in high-contrast color. Perfect for visualizing running routes, hikes, cycling trips, or any GPS tracking activity.
