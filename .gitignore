@@ -3,6 +3,10 @@ cache/*
 # Strava OAuth tokens
 .strava_token.json
 
+# Personal track files and generated posters (tracked README examples are unaffected)
+gpx/
+posters/*.png
+
 # Virtual environments
 env/
 .env/
